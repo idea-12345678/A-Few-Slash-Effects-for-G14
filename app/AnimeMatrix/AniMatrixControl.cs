@@ -1,4 +1,5 @@
 ﻿using GHelper.Helpers;
+using GHelper.Mode;
 using System.Diagnostics;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
@@ -24,6 +25,17 @@ namespace GHelper.AnimeMatrix
 
         System.Timers.Timer matrixTimer = default!;
         System.Timers.Timer slashTimer = default!;
+        System.Timers.Timer slashStreamTimer = default!;
+        int streamIndex = 0;
+        int streamStepMs = 250;
+        int fishTick = 0;
+        int batteryTick = 0;
+        uint showRng = 0x9E3779B9u;
+        int sceneType = 0;
+        int sceneTicks = 0;
+        int sceneDur = 0;
+        int sceneParam = 0;
+        long sceneMask = 0;
 
         public AnimeMatrixDevice? deviceMatrix;
         public SlashDevice? deviceSlash;
@@ -95,6 +107,7 @@ namespace GHelper.AnimeMatrix
             int inteval = AppConfig.Get("matrix_interval", 0);
 
             StopAudio();
+            StreamTimer_stop();
 
             Task.Run(() =>
             {
@@ -146,6 +159,15 @@ namespace GHelper.AnimeMatrix
                             slashMode = (SlashMode)running;
                             Logger.WriteLine("Slash: Audio");
                             SetAudio();
+                            break;
+                        case SlashMode.Stream01:
+                        case SlashMode.Stream02:
+                        case SlashMode.Fish01:
+                        case SlashMode.BatteryShow:
+                            Logger.WriteLine($"Slash: {(SlashMode)running} ({StreamStepFor((SlashMode)running)} ms, {LitSegmentsForCurrentMode()} LED)");
+                            deviceSlash.Init();
+                            deviceSlash.SetCustom(new byte[deviceSlash.LedCount]);
+                            StreamTimer_start((SlashMode)running);
                             break;
                         case SlashMode.Dark:
                             deviceSlash.Init();
@@ -377,11 +399,261 @@ namespace GHelper.AnimeMatrix
             deviceSlash.SetBatteryPattern(AppConfig.Get("matrix_brightness", 0));
         }
 
+        // Host-driven modes: Stream01 = 250 ms, Stream02 = 150 ms, Fish01 = 60 ms, BatteryShow = 100 ms.
+        private static int StreamStepFor(SlashMode mode) => mode switch
+        {
+            SlashMode.Stream02 => 150,
+            SlashMode.Fish01 => 60,
+            SlashMode.BatteryShow => 50,
+            _ => 250
+        };
+
+        private void StreamTimer_start(SlashMode mode)
+        {
+            if (deviceSlash is null) return;
+
+            streamStepMs = StreamStepFor(mode);
+
+            if (slashStreamTimer == default(System.Timers.Timer))
+            {
+                slashStreamTimer = new System.Timers.Timer(streamStepMs);
+                slashStreamTimer.Elapsed += StreamTimer_elapsed;
+                slashStreamTimer.AutoReset = true;
+            }
+
+            slashStreamTimer.Interval = streamStepMs;
+
+            streamIndex = 0;
+            fishTick = 0;
+            batteryTick = 0;
+            showRng = 0x9E3779B9u;
+            sceneDur = 0;
+            sceneTicks = 0;
+            StreamTimer_tick();
+            slashStreamTimer.Start();
+        }
+
+        private void StreamTimer_stop()
+        {
+            slashStreamTimer?.Stop();
+        }
+
+        private void StreamTimer_elapsed(object? sender, ElapsedEventArgs e)
+        {
+            try { StreamTimer_tick(); }
+            catch (Exception ex) { Logger.WriteLine(ex.Message); }
+        }
+
+        private void StreamTimer_tick()
+        {
+            if (deviceSlash is null) return;
+
+            int brightness = AppConfig.Get("matrix_brightness", 0);
+            var mode = (SlashMode)AppConfig.Get("matrix_running", 0);
+
+            // stop when another mode (or "off") has been selected
+            if ((mode != SlashMode.Stream01 && mode != SlashMode.Stream02
+                 && mode != SlashMode.Fish01 && mode != SlashMode.BatteryShow)
+                || brightness == 0)
+            {
+                StreamTimer_stop();
+                return;
+            }
+
+            var payload = new byte[deviceSlash.LedCount];
+
+            if (mode == SlashMode.Fish01)
+            {
+                BuildCreativeFrame(payload, brightness);
+            }
+            else if (mode == SlashMode.BatteryShow)
+            {
+                BuildBatteryFrame(payload, brightness);
+            }
+            else
+            {
+                int lit = LitSegmentsForCurrentMode();
+                for (int k = 0; k < lit; k++)
+                {
+                    payload[(streamIndex + k) % payload.Length] = (byte)(brightness * 85.333);
+                }
+                streamIndex++;
+            }
+
+            deviceSlash.ContinueCustom(payload, null);
+        }
+
+        // 蓝色大肥鱼01 — a long procedural binary light show (the name is just a name).
+        // Only two states per segment: full on / off. Scenes are picked by an LCG, so the
+        // sequence keeps evolving for hours instead of looping a short clip.
+        // Scene types: chase, fat block, alternating flip, crescendo-to-full, all-on strobe,
+        // random bursts, converging pair, full pulses, random sparks. Every scene ends with
+        // a short all-black gap for contrast.
+        private void BuildCreativeFrame(byte[] payload, int brightness)
+        {
+            int led = payload.Length;
+            fishTick++;
+
+            if (sceneDur == 0 || sceneTicks >= sceneDur) StartShowScene();
+
+            int s = sceneTicks++;
+            int idx = Modes.GetCurrent() switch { 2 => 0, 0 => 1, _ => 2 };
+            int step = 4 - idx;                     // 4 / 3 / 2 frames per position
+
+            if (s >= sceneDur - 4) return;          // all-black gap between scenes
+
+            byte on = Level(brightness, 1.0);
+            long mask = 0;
+            long all = (1L << led) - 1;
+
+            switch (sceneType)
+            {
+                case 0:                             // chase to the right
+                    mask = 1L << ((s / step) % led);
+                    break;
+                case 1:                             // chase to the left
+                    mask = 1L << (led - 1 - ((s / step) % led));
+                    break;
+                case 2:                             // fat 3-segment block
+                {
+                    int p = (s / step) % led;
+                    for (int k = 0; k < 3; k++) mask |= 1L << ((p + k) % led);
+                    break;
+                }
+                case 3:                             // alternating bars flipping
+                    mask = ((s / (step + 1)) % 2 == 0) ? 0b1010101L : 0b0101010L;
+                    break;
+                case 4:                             // crescendo until everything is on
+                    mask = (1L << Math.Min(led, s / (step - 1) + 1)) - 1;
+                    break;
+                case 5:                             // all-on strobe
+                    mask = ((s % 7) < 3) ? all : 0;
+                    break;
+                case 6:                             // random bursts
+                    if (s % 5 == 0) sceneMask = RandomMask(led);
+                    mask = sceneMask;
+                    break;
+                case 7:                             // converging pair
+                {
+                    int p = Math.Min(led / 2, s / step);
+                    mask = (1L << p) | (1L << (led - 1 - p));
+                    break;
+                }
+                case 8:                             // full pulses
+                    mask = (s < 6 || (s >= 12 && s < 16)) ? all : 0;
+                    break;
+                default:                            // random sparks
+                    if (s % 3 == 0) sceneParam = (int)(NextRand() % (uint)led);
+                    mask = 1L << sceneParam;
+                    break;
+            }
+
+            for (int i = 0; i < led; i++)
+            {
+                if ((mask & (1L << i)) != 0) payload[i] = on;
+            }
+        }
+
+        // 电池电量模式 — 7 segments cover 30%..100% (one segment per 10% band).
+        // 电池电量模式 — 7 segments cover 30%..100% (one segment per 10% band).
+        // Index 0 is the physical top of the bar: the segment for the current charge stays
+        // solid there and never blinks. With "a" = current charge band (1..7), the flowing part
+        // below the marker plays one lap as:
+        //     [1,无] -> [2,1] -> ... -> [a-1,a-2] -> [无,a-1]
+        // ([full, 50% trail], positions counted from the bottom). Each step lasts 0.1 s, then the
+        // flow rests for 0.5 s (marker only) before the next lap. Timer runs at 50 ms, so a step
+        // is 2 frames and the rest is 10 frames. While plugged the full segment climbs bottom ->
+        // top; on battery the same lap runs in the opposite direction. Below 40%: marker only.
+        private void BuildBatteryFrame(byte[] payload, int brightness)
+        {
+            int led = payload.Length;
+            int t = batteryTick++;
+
+            int percent = (int)Math.Round(HardwareControl.GetBatteryChargePercentage());
+
+            // 30% -> 1 segment, each further 10% adds one, 90..100% -> all segments
+            int a = Math.Clamp(1 + (percent - 30) / 10, 1, led);
+
+            byte on = Level(brightness, 1.0);
+
+            // top segment: solid marker for the current level, never blinks
+            payload[0] = on;
+
+            if (a <= 1) return;
+
+            bool plugged = SystemInformation.PowerStatus.PowerLineStatus == PowerLineStatus.Online;
+
+            int flowFrames = a * 2;              // a steps of 0.1 s at 50 ms/frame
+            int cycle = flowFrames + 10;         // + 0.5 s rest
+            int frame = t % cycle;
+            if (frame >= flowFrames) return;     // rest: marker only
+
+            int s = frame / 2;                   // step index 0..a-1
+
+            // full-brightness cell for this step (positions counted from the bottom)
+            if (s <= a - 2)
+            {
+                int kFull = plugged ? s + 1 : a - 1 - s;
+                payload[a - kFull] = on;
+            }
+
+            // 50% trail one step behind the full cell
+            if (s >= 1)
+            {
+                int kTrail = plugged ? s : a - s;
+                payload[a - kTrail] = Level(brightness, 0.5);
+            }
+        }
+
+        private void StartShowScene()
+        {
+            uint r = NextRand();
+            sceneType = (int)(r % 10);
+            sceneParam = (int)((r >> 4) % 7);
+            sceneDur = 26 + (int)((r >> 8) % 42);    // 26..67 frames (~1.6..4 s at 60 ms)
+            sceneTicks = 0;
+            sceneMask = 0;
+        }
+
+        private long RandomMask(int led)
+        {
+            long mask = 0;
+            int count = 1 + (int)(NextRand() % (uint)(led / 2 + 1));
+            for (int k = 0; k < count; k++) mask |= 1L << (int)(NextRand() % (uint)led);
+            return mask;
+        }
+
+        private uint NextRand()
+        {
+            showRng = showRng * 1664525u + 1013904223u;
+            return showRng >> 8;
+        }
+
+        private static byte Level(int brightness, double factor)
+        {
+            int value = (int)(brightness * 85.333 * factor);
+            return (byte)Math.Max(0, Math.Min(255, value));
+        }
+
+        // Segment count follows the current performance profile:
+        // Silent (mode 2) -> 1 LED, Balanced (mode 0) -> 2 LEDs, Turbo / any other mode -> 3 LEDs.
+        private static int LitSegmentsForCurrentMode()
+        {
+            return Modes.GetCurrent() switch
+            {
+                2 => 1,   // AsusACPI.PerformanceSilent
+                0 => 2,   // AsusACPI.PerformanceBalanced
+                _ => 3    // Turbo, Full Speed, custom profiles
+            };
+        }
+
 
         public void Dispose()
         {
             disposed = true;
             StopAudio();
+            StreamTimer_stop();
+            slashStreamTimer?.Dispose();
             matrixTimer?.Stop();
             matrixTimer?.Dispose();
             slashTimer?.Stop();

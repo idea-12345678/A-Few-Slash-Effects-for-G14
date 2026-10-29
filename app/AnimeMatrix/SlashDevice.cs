@@ -1,4 +1,4 @@
-﻿using GHelper.AnimeMatrix.Communication;
+using GHelper.AnimeMatrix.Communication;
 using GHelper.USB;
 using HidSharp.Reports;
 using System.Management;
@@ -31,6 +31,10 @@ namespace GHelper.AnimeMatrix
         BatteryLevel,
         Audio,
         Dark,
+        Stream01,
+        Stream02,
+        Fish01,
+        BatteryShow,
         AudioSpectrum
     }
 
@@ -84,7 +88,11 @@ namespace GHelper.AnimeMatrix
 
             { SlashMode.BatteryLevel, Properties.Strings.SlashBatteryLevel},
             { SlashMode.Audio, Properties.Strings.MatrixAudio},
-            { SlashMode.Dark, "Dark"}
+            { SlashMode.Dark, "Dark"},
+            { SlashMode.Stream01, "流水灯测试01"},
+            { SlashMode.Stream02, "流水灯02"},
+            { SlashMode.Fish01, "蓝色大肥鱼01"},
+            { SlashMode.BatteryShow, "电池电量模式"}
 
         };
 
@@ -122,6 +130,9 @@ namespace GHelper.AnimeMatrix
         }
 
         protected int Length { get; private set; }
+
+        /// <summary>Number of independently addressable segments (7 on GA403, 35 on long bars).</summary>
+        public int LedCount => Length;
 
         public SlashDevice(ushort productId = 0x193B) : base(0x0B05, productId, 128)
         {
