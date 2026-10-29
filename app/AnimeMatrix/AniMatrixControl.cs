@@ -555,10 +555,9 @@ namespace GHelper.AnimeMatrix
         }
 
         // 电池电量模式 — 7 segments cover 30%..100% (one segment per 10% band).
-        // 电池电量模式 — 7 segments cover 30%..100% (one segment per 10% band).
-        // Index 0 is the physical top of the bar: the segment for the current charge stays
-        // solid there and never blinks. With "a" = current charge band (1..7), the flowing part
-        // below the marker plays one lap as:
+        // "a" = current charge band (1..7). The bar fills from the physical bottom, so the
+        // highest lit segment sits at index (led - a) and descends as the battery drops; it
+        // stays solid and never blinks. The cells below it play one lap as:
         //     [1,无] -> [2,1] -> ... -> [a-1,a-2] -> [无,a-1]
         // ([full, 50% trail], positions counted from the bottom). Each step lasts 0.1 s, then the
         // flow rests for 0.5 s (marker only) before the next lap. Timer runs at 50 ms, so a step
@@ -576,8 +575,9 @@ namespace GHelper.AnimeMatrix
 
             byte on = Level(brightness, 1.0);
 
-            // top segment: solid marker for the current level, never blinks
-            payload[0] = on;
+            // highest lit segment: solid marker for the current level, never blinks
+            int marker = led - a;
+            payload[marker] = on;
 
             if (a <= 1) return;
 
@@ -594,14 +594,14 @@ namespace GHelper.AnimeMatrix
             if (s <= a - 2)
             {
                 int kFull = plugged ? s + 1 : a - 1 - s;
-                payload[a - kFull] = on;
+                payload[led - kFull] = on;
             }
 
             // 50% trail one step behind the full cell
             if (s >= 1)
             {
                 int kTrail = plugged ? s : a - s;
-                payload[a - kTrail] = Level(brightness, 0.5);
+                payload[led - kTrail] = Level(brightness, 0.5);
             }
         }
 

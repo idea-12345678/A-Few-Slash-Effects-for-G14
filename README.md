@@ -26,10 +26,11 @@ The Slash bar on these laptops is **monochrome brightness**, not RGB, so every p
 ### 电池电量模式 (battery gauge)
 
 - 7 segments cover **30 %–100 %** (30–39 % → 1 segment, 40–49 % → 2, …, 90–100 % → 7);
-- the segment for the current level sits at the top of the bar and **stays solid, never blinks**;
-- with `a` = current band, the region below plays one lap as
+- the bar fills from the physical bottom: the **highest lit segment descends as the battery drops**
+  (index `7 - a`), stays solid and never blinks;
+- with `a` = current band, the cells below that marker play one lap as
   `[1, none] → [2, 1] → … → [a-1, a-2] → [none, a-1]` (`[full, 50 % trail]`, positions counted from the bottom),
-  **0.1 s per step**, then rests **0.5 s** with only the top marker before the next lap;
+  **0.1 s per step**, then rests **0.5 s** with only the marker before the next lap;
 - while charging the full segment climbs bottom → top; on battery the whole lap runs in reverse.
 
 ## How it works
