@@ -131,12 +131,16 @@ namespace GHelper.AnimeMatrix
 
         protected int Length { get; private set; }
 
+        // Reused 128-byte feature report for the host-driven stream (no per-frame allocations).
+        private readonly byte[] _frameReport = new byte[128];
+
         /// <summary>Number of independently addressable segments (7 on GA403, 35 on long bars).</summary>
         public int LedCount => Length;
 
         public SlashDevice(ushort productId = 0x193B) : base(0x0B05, productId, 128)
         {
             Length = AppConfig.IsSlashLong() ? 35 : 7;
+            Array.Clear(_frameReport, 5 + Length, _frameReport.Length - 5 - Length);
         }
 
         public static SlashDevice? Detect()
@@ -291,6 +295,21 @@ namespace GHelper.AnimeMatrix
         {
             byte[] payload = new byte[] { 0xD3, 0x00, 0x00, (byte)Length };
             Set(CreatePacket(payload.Concat(data.Take(Length)).ToArray()), log);
+        }
+
+        /// <summary>
+        /// Allocation-free frame path for the host-driven stream (called up to ~17 times/s):
+        /// reuses one 128-byte feature report instead of building a Packet per frame.
+        /// </summary>
+        public void ContinueCustomFast(byte[] data)
+        {
+            _frameReport[0] = reportID;
+            _frameReport[1] = 0xD3;
+            _frameReport[2] = 0x00;
+            _frameReport[3] = 0x00;
+            _frameReport[4] = (byte)Length;
+            Array.Copy(data, 0, _frameReport, 5, Length);
+            lock (AsusHid.hidLock) _usbProvider?.Set(_frameReport);
         }
 
         public void SetOptions(bool status, int brightness = 0, int interval = 0)

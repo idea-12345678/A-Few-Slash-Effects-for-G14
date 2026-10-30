@@ -75,13 +75,18 @@ dotnet publish app/GHelper.sln -c Release -r win-x64 -p:PublishSingleFile=true -
 
 ## Power notes
 
-- The LED bar itself is the main draw; the host stream is cheap. Measured G-Helper CPU is ~2 % of
-  one core on a 24-thread machine, and the same before/after these tweaks (within measurement noise).
+- The LED bar itself is the main draw; the host stream is cheap. Measured on a 24-thread machine
+  (30 s samples): firmware presets ≈ **0.000 CPU s**, the host-driven stream ≈ **0.17–0.20 CPU s
+  (≈0.6 % of one core, ≈0.03 % of the whole machine)**.
+- Frames are written through an allocation-free path (reused 128-byte feature report and frame
+  buffer) instead of allocating per frame.
 - The stream respects G-Helper's gating: with `matrix_auto` on battery and `matrix_lid` on lid close
   the bar is blanked once and frame writes stop; they resume automatically when gating clears.
 - Identical consecutive frames are skipped (e.g. the 0.5 s battery rest), and the battery gauge timer
   runs at 100 ms (still 0.1 s per step, 0.5 s rest), halving wake-ups.
-- Optional: `"slash_stream_battery_dim": 60` (0–100, default 100) dims every frame while on battery.
+- Optional knobs (in `%APPDATA%\GHelper\config.json`):
+  `"slash_stream_battery_dim": 60` (0–100, default 100) dims frames while on battery;
+  `"slash_stream_fish_ms": 100` (40–200, default 60) lowers the light-show frame rate to save more.
 - For all-day use, firmware presets (EC-driven) or a lower `matrix_brightness` (0–3) save the most LED power.
 
 ## Notes / limitations

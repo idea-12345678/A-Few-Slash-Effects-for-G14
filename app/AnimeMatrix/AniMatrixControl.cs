@@ -32,6 +32,7 @@ namespace GHelper.AnimeMatrix
         int batteryTick = 0;
         bool streamGated = false;
         byte[]? lastFrame = null;
+        byte[] streamPayload = Array.Empty<byte>();
         uint showRng = 0x9E3779B9u;
         int sceneType = 0;
         int sceneTicks = 0;
@@ -401,11 +402,12 @@ namespace GHelper.AnimeMatrix
             deviceSlash.SetBatteryPattern(AppConfig.Get("matrix_brightness", 0));
         }
 
-        // Host-driven modes: Stream01 = 250 ms, Stream02 = 150 ms, Fish01 = 60 ms, BatteryShow = 100 ms.
+        // Host-driven modes: Stream01 = 250 ms, Stream02 = 150 ms, Fish01 = 60 ms (configurable
+        // via "slash_stream_fish_ms", 40..200), BatteryShow = 100 ms.
         private static int StreamStepFor(SlashMode mode) => mode switch
         {
             SlashMode.Stream02 => 150,
-            SlashMode.Fish01 => 60,
+            SlashMode.Fish01 => Math.Clamp(AppConfig.Get("slash_stream_fish_ms", 60), 40, 200),
             SlashMode.BatteryShow => 100,
             _ => 250
         };
@@ -430,6 +432,7 @@ namespace GHelper.AnimeMatrix
             batteryTick = 0;
             streamGated = false;
             lastFrame = null;
+            streamPayload = new byte[deviceSlash.LedCount];
             showRng = 0x9E3779B9u;
             sceneDur = 0;
             sceneTicks = 0;
@@ -470,7 +473,8 @@ namespace GHelper.AnimeMatrix
             {
                 if (!streamGated)
                 {
-                    deviceSlash.ContinueCustom(new byte[deviceSlash.LedCount], null);
+                    Array.Clear(streamPayload, 0, streamPayload.Length);
+                    deviceSlash.ContinueCustomFast(streamPayload);
                     lastFrame = null;
                     streamGated = true;
                 }
@@ -487,22 +491,24 @@ namespace GHelper.AnimeMatrix
                 lastFrame = null;
             }
 
-            var payload = new byte[deviceSlash.LedCount];
+            if (streamPayload.Length != deviceSlash.LedCount)
+                streamPayload = new byte[deviceSlash.LedCount];
+            Array.Clear(streamPayload, 0, streamPayload.Length);
 
             if (mode == SlashMode.Fish01)
             {
-                BuildCreativeFrame(payload, brightness);
+                BuildCreativeFrame(streamPayload, brightness);
             }
             else if (mode == SlashMode.BatteryShow)
             {
-                BuildBatteryFrame(payload, brightness);
+                BuildBatteryFrame(streamPayload, brightness);
             }
             else
             {
                 int lit = LitSegmentsForCurrentMode();
                 for (int k = 0; k < lit; k++)
                 {
-                    payload[(streamIndex + k) % payload.Length] = (byte)(brightness * 85.333);
+                    streamPayload[(streamIndex + k) % streamPayload.Length] = (byte)(brightness * 85.333);
                 }
                 streamIndex++;
             }
@@ -514,18 +520,20 @@ namespace GHelper.AnimeMatrix
                 && SystemInformation.PowerStatus.PowerLineStatus != PowerLineStatus.Online)
             {
                 dim = Math.Max(0, Math.Min(100, dim));
-                for (int i = 0; i < payload.Length; i++)
+                for (int i = 0; i < streamPayload.Length; i++)
                 {
-                    payload[i] = (byte)(payload[i] * dim / 100);
+                    streamPayload[i] = (byte)(streamPayload[i] * dim / 100);
                 }
             }
 
             // Skip identical consecutive frames (e.g. the 0.5 s battery rest) so the EC/USB is
             // not written twice for the same picture.
-            if (lastFrame is not null && payload.AsSpan().SequenceEqual(lastFrame)) return;
+            if (lastFrame is not null && streamPayload.AsSpan().SequenceEqual(lastFrame)) return;
 
-            deviceSlash.ContinueCustom(payload, null);
-            lastFrame = (byte[])payload.Clone();
+            deviceSlash.ContinueCustomFast(streamPayload);
+            if (lastFrame is null || lastFrame.Length != streamPayload.Length)
+                lastFrame = new byte[streamPayload.Length];
+            Array.Copy(streamPayload, lastFrame, streamPayload.Length);
         }
 
         // 蓝色大肥鱼01 — a long procedural binary light show (the name is just a name).
