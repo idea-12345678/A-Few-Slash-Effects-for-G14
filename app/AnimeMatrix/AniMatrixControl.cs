@@ -1,4 +1,4 @@
-﻿using GHelper.Helpers;
+using GHelper.Helpers;
 using GHelper.Mode;
 using System.Diagnostics;
 using System.Drawing.Drawing2D;
@@ -30,6 +30,8 @@ namespace GHelper.AnimeMatrix
         int streamStepMs = 250;
         int fishTick = 0;
         int batteryTick = 0;
+        bool streamGated = false;
+        byte[]? lastFrame = null;
         uint showRng = 0x9E3779B9u;
         int sceneType = 0;
         int sceneTicks = 0;
@@ -404,7 +406,7 @@ namespace GHelper.AnimeMatrix
         {
             SlashMode.Stream02 => 150,
             SlashMode.Fish01 => 60,
-            SlashMode.BatteryShow => 50,
+            SlashMode.BatteryShow => 100,
             _ => 250
         };
 
@@ -426,6 +428,8 @@ namespace GHelper.AnimeMatrix
             streamIndex = 0;
             fishTick = 0;
             batteryTick = 0;
+            streamGated = false;
+            lastFrame = null;
             showRng = 0x9E3779B9u;
             sceneDur = 0;
             sceneTicks = 0;
@@ -460,6 +464,29 @@ namespace GHelper.AnimeMatrix
                 return;
             }
 
+            // Respect G-Helper gating ("turn off on battery" / "disable on lid close"):
+            // blank the bar once and stop writing frames; resume automatically when it clears.
+            if (IsGated)
+            {
+                if (!streamGated)
+                {
+                    deviceSlash.ContinueCustom(new byte[deviceSlash.LedCount], null);
+                    lastFrame = null;
+                    streamGated = true;
+                }
+                return;
+            }
+
+            if (streamGated)
+            {
+                streamGated = false;
+                streamIndex = 0;
+                fishTick = 0;
+                batteryTick = 0;
+                sceneDur = 0;
+                lastFrame = null;
+            }
+
             var payload = new byte[deviceSlash.LedCount];
 
             if (mode == SlashMode.Fish01)
@@ -480,7 +507,25 @@ namespace GHelper.AnimeMatrix
                 streamIndex++;
             }
 
+            // Optional power saver: dim the whole frame while running on battery.
+            // Set "slash_stream_battery_dim" to e.g. 60 in config.json (100 = no dimming).
+            int dim = AppConfig.Get("slash_stream_battery_dim", 100);
+            if (dim < 100
+                && SystemInformation.PowerStatus.PowerLineStatus != PowerLineStatus.Online)
+            {
+                dim = Math.Max(0, Math.Min(100, dim));
+                for (int i = 0; i < payload.Length; i++)
+                {
+                    payload[i] = (byte)(payload[i] * dim / 100);
+                }
+            }
+
+            // Skip identical consecutive frames (e.g. the 0.5 s battery rest) so the EC/USB is
+            // not written twice for the same picture.
+            if (lastFrame is not null && payload.AsSpan().SequenceEqual(lastFrame)) return;
+
             deviceSlash.ContinueCustom(payload, null);
+            lastFrame = (byte[])payload.Clone();
         }
 
         // 蓝色大肥鱼01 — a long procedural binary light show (the name is just a name).
@@ -560,8 +605,8 @@ namespace GHelper.AnimeMatrix
         // stays solid and never blinks. The cells below it play one lap as:
         //     [1,无] -> [2,1] -> ... -> [a-1,a-2] -> [无,a-1]
         // ([full, 50% trail], positions counted from the bottom). Each step lasts 0.1 s, then the
-        // flow rests for 0.5 s (marker only) before the next lap. Timer runs at 50 ms, so a step
-        // is 2 frames and the rest is 10 frames. While plugged the full segment climbs bottom ->
+        // flow rests for 0.5 s (marker only) before the next lap. Timer runs at 100 ms, so a step
+        // is 1 frame and the rest is 5 frames. While plugged the full segment climbs bottom ->
         // top; on battery the same lap runs in the opposite direction. Below 40%: marker only.
         private void BuildBatteryFrame(byte[] payload, int brightness)
         {
@@ -583,12 +628,12 @@ namespace GHelper.AnimeMatrix
 
             bool plugged = SystemInformation.PowerStatus.PowerLineStatus == PowerLineStatus.Online;
 
-            int flowFrames = a * 2;              // a steps of 0.1 s at 50 ms/frame
-            int cycle = flowFrames + 10;         // + 0.5 s rest
+            int flowFrames = a;                  // a steps of 0.1 s at 100 ms/frame
+            int cycle = flowFrames + 5;          // + 0.5 s rest
             int frame = t % cycle;
             if (frame >= flowFrames) return;     // rest: marker only
 
-            int s = frame / 2;                   // step index 0..a-1
+            int s = frame;                       // step index 0..a-1
 
             // full-brightness cell for this step (positions counted from the bottom)
             if (s <= a - 2)

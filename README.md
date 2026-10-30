@@ -73,6 +73,17 @@ dotnet publish app/GHelper.sln -c Release -r win-x64 -p:PublishSingleFile=true -
 - Other machines with the same 7-segment Slash controller should work. Longer 35-segment bars use the
   same code path (`LedCount`) but were not tested here.
 
+## Power notes
+
+- The LED bar itself is the main draw; the host stream is cheap. Measured G-Helper CPU is ~2 % of
+  one core on a 24-thread machine, and the same before/after these tweaks (within measurement noise).
+- The stream respects G-Helper's gating: with `matrix_auto` on battery and `matrix_lid` on lid close
+  the bar is blanked once and frame writes stop; they resume automatically when gating clears.
+- Identical consecutive frames are skipped (e.g. the 0.5 s battery rest), and the battery gauge timer
+  runs at 100 ms (still 0.1 s per step, 0.5 s rest), halving wake-ups.
+- Optional: `"slash_stream_battery_dim": 60` (0–100, default 100) dims every frame while on battery.
+- For all-day use, firmware presets (EC-driven) or a lower `matrix_brightness` (0–3) save the most LED power.
+
 ## Notes / limitations
 
 - Host-driven frames stop during sleep/lid-close (only firmware presets run there); G-Helper re-enters
@@ -91,3 +102,5 @@ This is an unofficial fork, not affiliated with or endorsed by ASUS or the G-Hel
 
 - **v0.288-r1** — add 流水灯测试01 (0.25 s), 流水灯02 (0.15 s), 蓝色大肥鱼01 (binary show),
   电池电量模式 (30–100 % gauge with 50 % trail, 0.1 s steps, 0.5 s rest, AC-dependent direction).
+- **v0.288-r2** — respect battery/lid gating, skip identical frames, 100 ms battery timer,
+  optional `slash_stream_battery_dim` power saver.
